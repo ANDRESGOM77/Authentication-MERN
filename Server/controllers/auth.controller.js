@@ -1,8 +1,13 @@
 import bcryptjs from "bcryptjs";
-
+import crypto from "crypto";
 import { User } from "../models/User.js";
 import { generateTokenAndSetCookie } from "../utils/generateTokenAndSetCookies.js";
-import { sendVerificationEmail, sendWelcomeEmail } from "../mailtrap/email.js";
+import {
+  sendVerificationEmail,
+  sendWelcomeEmail,
+  sendPasswordResetEmail,
+  sendResetSuccessEmail,
+} from "../mailtrap/email.js";
 
 export const signup = async (req, res) => {
   console.log("Sing up successfully");
@@ -86,9 +91,11 @@ export const verifyEmail = async (req, res) => {
       .json({ success: false, message: "error in verification of email" });
   }
 };
+
 export const login = async (req, res) => {
+  const { email, password } = req.body;
   try {
-    const user = await user.findOne({ email });
+    const user = await User.findOne({ email });
     if (!user) {
       return res
         .status(400)
@@ -108,14 +115,16 @@ export const login = async (req, res) => {
     res.status(200).json({
       success: true,
       message: "logged in successfully",
-      user:{
+      user: {
         ...user._doc,
         password: undefined,
-      }
-    })
+      },
+    });
   } catch (error) {
-    console.log("Error in Log in");
-    res.status(400).json({success:false, message:`error in log in ${error.message}`})
+    console.log("Error in Log in", error.message);
+    res
+      .status(400)
+      .json({ success: false, message: `error in log in ${error.message}` });
   }
 };
 
@@ -124,3 +133,88 @@ export const logout = async (req, res) => {
   console.log("user has log out");
   res.status(200).json({ message: "user log out" });
 };
+
+export const forgotPassword = async (req, res) => {
+  const { email } = req.body;
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res
+        .status(400)
+        .json({ success: false, message: "invalid email, User not found" });
+    }
+    //Generate token
+    const resetToken = crypto.randomBytes(20).toString("hex");
+    const resetTokenExpiresAt = Date.now() + 1 * 60 * 60 * 1000;
+
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = resetTokenExpiresAt;
+
+    await user.save();
+
+    //Send email for reset password
+
+    await sendPasswordResetEmail(
+      user.email,
+      `${process.env.CLIENT_URL}/reset-password/${resetToken}`
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Password reset link sent to your email",
+    });
+  } catch (error) {
+    console.log("error sending password reset email", error.message);
+    res.status(400).json({ success: false, message: "error sending email" });
+  }
+};
+
+export const resetPassword = async (req, res) => {
+  try {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    const user = await User.findOne({
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid token or expired" });
+    }
+
+    const hashedPassword = await bcryptjs.hash(password, 10);
+
+    user.password = hashedPassword;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+
+    await user.save();
+
+    await sendResetSuccessEmail(user.email);
+
+    res
+      .status(200)
+      .json({ success: true, message: "Password reset successfully" });
+  } catch (error) {
+    console.log("error in resetPassword", error.message);
+    res
+      .status(400)
+      .json({ success: false, message: "error resetting password" });
+  }
+};
+
+export const checkAuth =async (req,res) => {
+  try {
+    const user = await User.findById(req.userId).select("-password")
+    
+    if(!user) return res.status(404).json({success:false,message:"User not found"})
+
+      res.status(200).json({success:true,user})
+  } catch (error) {
+     console.log("error in checkAuth", error.message);
+    res.status(400).json({success:false, message:"Error in checkAuth"})  
+  }
+}
